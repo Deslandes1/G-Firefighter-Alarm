@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ---------- CSS ----------
+# ---------- CSS (all text white, buttons readable) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -62,6 +62,7 @@ st.markdown(r"""
         .logo-text { font-size: 1.8rem; }
         .fire-alert { font-size: 1.2rem; }
     }
+    /* Make all normal text white */
     .stMarkdown, .stRadio label, .stTextInput label, .stButton button p, .stCaption {
         color: white !important;
     }
@@ -82,6 +83,30 @@ st.markdown(r"""
     }
     .stRadio div[role="radiogroup"] div {
         color: white !important;
+    }
+    /* Make button text white and background dark */
+    .stButton button {
+        color: white !important;
+        background-color: #2a5298 !important;
+        border: none !important;
+        font-weight: bold !important;
+    }
+    .stButton button:hover {
+        background-color: #1e3c72 !important;
+    }
+    /* Make expander header and content white */
+    .streamlit-expanderHeader {
+        color: white !important;
+        background-color: rgba(0,0,0,0.3) !important;
+        border-radius: 10px;
+    }
+    .streamlit-expanderContent {
+        color: white !important;
+    }
+    /* Ensure warning/info boxes also have readable text */
+    .stAlert {
+        color: white !important;
+        background-color: rgba(0,0,0,0.7) !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -164,7 +189,6 @@ def main_app():
                 st.error("All fields required.")
 
     # Check for fire detection trigger from JavaScript (via query param)
-    # Using st.query_params (new API)
     query_params = st.query_params
     if query_params.get("fire_detected") == "1":
         if not st.session_state.email_sent_flag:
@@ -179,7 +203,7 @@ def main_app():
 
     st.markdown("### 🎥 Camera Detection")
 
-    # Build HTML/JS component (same as before, but with improved fetch)
+    # Build HTML/JS component (camera, detection, alarm)
     camera_html = """
     <div id="camera-container" style="text-align: center;">
         <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b;"></video>
@@ -233,7 +257,6 @@ def main_app():
                 alarmPlaying = false;
             }
 
-            // Simple fire detection using HSV color range (same as Python version)
             function detectFire(frameData, width, height) {
                 let firePixels = 0;
                 for (let i = 0; i < frameData.data.length; i += 4) {
@@ -274,11 +297,9 @@ def main_app():
                 if (result.fire) {
                     statusDiv.innerHTML = '<span style="color: #ff4b4b; font-weight: bold;">🔥 FIRE DETECTED! Alarm sounding. 🔥</span>';
                     playAlarm();
-                    // Send email only once every 30 seconds at most
                     const now = Date.now();
                     if (now - lastEmailTriggerTime > 30000) {
                         lastEmailTriggerTime = now;
-                        // Use fetch to call the Streamlit backend with query param
                         fetch(window.location.href + '?fire_detected=1', { method: 'POST' })
                             .catch(e => console.warn("Email trigger failed", e));
                     }
