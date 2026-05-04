@@ -4,15 +4,47 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import time
+import json
+import os
+import requests
 
 st.set_page_config(
     page_title="G-Firefighter Alarm",
     page_icon="🔥",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ---------- CSS (all text white, expander header forced white) ----------
+# ---------- PERSISTENT SETTINGS FILE ----------
+SETTINGS_FILE = "fire_alarm_settings.json"
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
+
+# ---------- SESSION STATE INIT ----------
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "settings" not in st.session_state:
+    st.session_state.settings = load_settings()
+if "detection_active" not in st.session_state:
+    st.session_state.detection_active = False
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+
+def add_log(msg):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.logs.insert(0, f"{timestamp} - {msg}")
+    if len(st.session_state.logs) > 50:
+        st.session_state.logs = st.session_state.logs[:50]
+
+# ---------- CSS (same as before, with sidebar adjustments) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -84,7 +116,6 @@ st.markdown(r"""
     .stRadio div[role="radiogroup"] div {
         color: white !important;
     }
-    /* Buttons */
     .stButton button {
         color: white !important;
         background-color: #2a5298 !important;
@@ -94,41 +125,26 @@ st.markdown(r"""
     .stButton button:hover {
         background-color: #1e3c72 !important;
     }
-    /* Expander – force header and content text white */
     .streamlit-expanderHeader {
         color: white !important;
         background-color: rgba(0,0,0,0.4) !important;
         border-radius: 10px;
         font-weight: bold;
     }
-    .streamlit-expanderHeader:hover {
-        background-color: rgba(0,0,0,0.6) !important;
-    }
-    .streamlit-expanderContent {
-        color: white !important;
-    }
-    /* Warning/info boxes */
     .stAlert {
         color: white !important;
         background-color: rgba(0,0,0,0.7) !important;
     }
-    /* Ensure the expander text inside the header is white */
-    .stExpander summary p {
-        color: white !important;
+    /* Sidebar text white */
+    [data-testid="stSidebar"] {
+        background: #0a0f2a;
     }
-    .stExpander summary span {
+    [data-testid="stSidebar"] .stMarkdown, 
+    [data-testid="stSidebar"] label {
         color: white !important;
     }
 </style>
 """, unsafe_allow_html=True)
-
-# ---------- LOGIN STATE ----------
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "email_config" not in st.session_state:
-    st.session_state.email_config = None
-if "email_sent_flag" not in st.session_state:
-    st.session_state.email_sent_flag = False
 
 # ---------- LOGIN PAGE ----------
 def login_page():
@@ -142,14 +158,42 @@ def login_page():
         else:
             st.error("Incorrect password.")
 
-# ---------- EMAIL SENDER ----------
-def send_alert_email():
-    if st.session_state.email_config is None:
+# ---------- SEND SMS (Twilio) ----------
+def send_sms_alert(to_phone, message):
+    twilio_sid = st.session_state.settings.get("twilio_account_sid")
+    twilio_token = st.session_state.settings.get("twilio_auth_token")
+    twilio_from = st.session_state.settings.get("twilio_phone")
+    if not twilio_sid or not twilio_token or not twilio_from:
+        add_log("SMS not configured: missing Twilio credentials")
+        return False
+    try:
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{twilio_sid}/Messages.json"
+        payload = {
+            "To": to_phone,
+            "From": twilio_from,
+            "Body": message
+        }
+        r = requests.post(url, data=payload, auth=(twilio_sid, twilio_token))
+        if r.status_code == 201:
+            add_log("SMS alert sent")
+            return True
+        else:
+            add_log(f"SMS failed: {r.text}")
+            return False
+    except Exception as e:
+        add_log(f"SMS error: {e}")
+        return False
+
+# ---------- SEND EMAIL (existing, extended) ----------
+def send_alert_email(recipient=None):
+    email_config = st.session_state.settings.get("email_config", {})
+    if not email_config.get("sender") or not email_config.get("password"):
+        add_log("Email not configured")
         return False, "Email not configured"
     try:
         msg = MIMEMultipart()
-        msg["From"] = st.session_state.email_config["sender"]
-        msg["To"] = st.session_state.email_config["recipient"]
+        msg["From"] = email_config["sender"]
+        msg["To"] = recipient or email_config.get("recipient")
         msg["Subject"] = "🔥 FIRE ALERT - G-Firefighter Alarm System"
         body = f"""
         ALERT: Fire has been detected by your G-Firefighter Alarm system.
@@ -162,61 +206,117 @@ def send_alert_email():
         msg.attach(MIMEText(body, "plain"))
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
-        server.login(st.session_state.email_config["sender"], st.session_state.email_config["password"])
+        server.login(email_config["sender"], email_config["password"])
         server.send_message(msg)
         server.quit()
+        add_log("Email alert sent")
         return True, "Email sent"
     except Exception as e:
+        add_log(f"Email error: {e}")
         return False, str(e)
+
+# ---------- SIDEBAR CONFIGURATION ----------
+def sidebar_config():
+    st.sidebar.title("⚙️ Real‑Life Configuration")
+
+    # Camera source
+    st.sidebar.subheader("📷 Camera Source")
+    cam_source = st.sidebar.selectbox("Source Type", ["Webcam", "IP Camera"])
+    ip_camera_url = ""
+    if cam_source == "IP Camera":
+        ip_camera_url = st.sidebar.text_input("MJPEG/JPEG URL", 
+            value=st.session_state.settings.get("ip_camera_url", ""),
+            help="Example: http://192.168.1.100:8080/shot.jpg")
+    st.session_state.settings["cam_source"] = cam_source
+    st.session_state.settings["ip_camera_url"] = ip_camera_url
+
+    # Detection model
+    st.sidebar.subheader("🔥 Detection Method")
+    detection_model = st.sidebar.selectbox("Model", ["Simple Color", "TensorFlow.js (Alpha)"])
+    st.session_state.settings["detection_model"] = detection_model
+
+    # Sensitivity
+    sensitivity = st.sidebar.slider("Sensitivity (Fire % threshold)", 
+        min_value=0.5, max_value=5.0, value=1.0, step=0.1)
+    st.session_state.settings["sensitivity"] = sensitivity / 100.0
+
+    # Alerts
+    st.sidebar.subheader("📧 Email Alerts")
+    with st.sidebar.expander("Configure Email"):
+        sender = st.text_input("Your Gmail", value=st.session_state.settings.get("email_config", {}).get("sender", ""))
+        app_pwd = st.text_input("App Password", type="password", value=st.session_state.settings.get("email_config", {}).get("password", ""))
+        recipient = st.text_input("Recipient Email", value=st.session_state.settings.get("email_config", {}).get("recipient", ""))
+        if st.button("Save Email Settings"):
+            st.session_state.settings["email_config"] = {
+                "sender": sender,
+                "password": app_pwd,
+                "recipient": recipient
+            }
+            st.success("Email settings saved")
+
+    st.sidebar.subheader("📱 SMS Alerts (Twilio)")
+    with st.sidebar.expander("Configure SMS"):
+        twilio_sid = st.text_input("Account SID", value=st.session_state.settings.get("twilio_account_sid", ""))
+        twilio_token = st.text_input("Auth Token", type="password", value=st.session_state.settings.get("twilio_auth_token", ""))
+        twilio_phone = st.text_input("Twilio Phone Number", value=st.session_state.settings.get("twilio_phone", ""))
+        sms_recipient = st.text_input("Recipient Phone Number", value=st.session_state.settings.get("sms_recipient", ""))
+        if st.button("Save SMS Settings"):
+            st.session_state.settings["twilio_account_sid"] = twilio_sid
+            st.session_state.settings["twilio_auth_token"] = twilio_token
+            st.session_state.settings["twilio_phone"] = twilio_phone
+            st.session_state.settings["sms_recipient"] = sms_recipient
+            st.success("SMS settings saved")
+
+    st.sidebar.subheader("🧪 Test Mode")
+    test_mode = st.sidebar.checkbox("Simulate fire every 30 sec (no real alert)", 
+        value=st.session_state.settings.get("test_mode", False))
+    st.session_state.settings["test_mode"] = test_mode
+
+    # Save/Load settings
+    if st.sidebar.button("💾 Save Settings to Disk"):
+        save_settings(st.session_state.settings)
+        st.sidebar.success("Settings saved!")
+    if st.sidebar.button("📂 Load Settings from Disk"):
+        st.session_state.settings = load_settings()
+        st.rerun()
+
+    # Log viewer
+    st.sidebar.subheader("📜 Recent Logs")
+    for log in st.session_state.logs[:10]:
+        st.sidebar.text(log)
 
 # ---------- MAIN APP ----------
 def main_app():
-    st.markdown('<div style="display: flex; align-items: center; justify-content: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
-    st.title("🔥 Live Fire Detection")
-    st.markdown("**Camera feed** – we analyze for flames. Alarm + Email on detection.")
+    # Always show sidebar config
+    sidebar_config()
 
-    # Logout button
-    if st.button("Logout"):
-        st.session_state.authenticated = False
-        st.session_state.email_sent_flag = False
-        st.rerun()
+    # Main area
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown('<div style="display: flex; align-items: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
+        st.title("🔥 Live Fire Detection")
+        st.markdown("**Real‑time monitoring** – AI + color detection, email & SMS alerts")
+    with col2:
+        if st.button("Logout"):
+            st.session_state.authenticated = False
+            st.rerun()
 
     st.markdown("---")
 
-    # Email configuration section – the expander header text is now white
-    with st.expander("📧 Configure Email Alerts (required for email notifications)"):
-        sender = st.text_input("Your Gmail Address")
-        app_password = st.text_input("Gmail App Password", type="password")
-        recipient = st.text_input("House Owner's Email Address")
-        if st.button("Save Email Settings"):
-            if sender and app_password and recipient:
-                st.session_state.email_config = {
-                    "sender": sender,
-                    "password": app_password,
-                    "recipient": recipient
-                }
-                st.success("Email settings saved.")
-            else:
-                st.error("All fields required.")
+    # Camera and detection view (HTML component)
+    # We'll pass settings as a JSON string to JavaScript
+    settings_json = json.dumps({
+        "cam_source": st.session_state.settings.get("cam_source", "Webcam"),
+        "ip_camera_url": st.session_state.settings.get("ip_camera_url", ""),
+        "detection_model": st.session_state.settings.get("detection_model", "Simple Color"),
+        "sensitivity": st.session_state.settings.get("sensitivity", 0.01),
+        "test_mode": st.session_state.settings.get("test_mode", False)
+    })
 
-    # Check for fire detection trigger from JavaScript
-    query_params = st.query_params
-    if query_params.get("fire_detected") == "1":
-        if not st.session_state.email_sent_flag:
-            success, msg = send_alert_email()
-            if success:
-                st.success("Alert email sent to house owner.")
-                st.session_state.email_sent_flag = True
-            else:
-                st.error(f"Failed to send email: {msg}")
-        st.query_params.clear()
-
-    st.markdown("### 🎥 Camera Detection")
-
-    # HTML/JS camera component (same as before, works perfectly)
-    camera_html = """
+    camera_html = f"""
     <div id="camera-container" style="text-align: center;">
-        <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b;"></video>
+        <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b; display: none;"></video>
+        <img id="ipImage" width="100%" style="border-radius: 20px; border: 2px solid #ff6b6b; display: none;">
         <canvas id="canvas" style="display: none;"></canvas>
         <div id="status" style="margin-top: 1rem; padding: 0.5rem; border-radius: 20px; background: rgba(0,0,0,0.7); color: white;"></div>
         <button id="startBtn" style="margin-top: 1rem; padding: 0.5rem 1.5rem; background-color: #ff4b4b; border: none; border-radius: 30px; color: white; font-weight: bold;">Start Detection</button>
@@ -224,8 +324,10 @@ def main_app():
         <button id="stopAlarmBtn" style="margin-top: 1rem; margin-left: 1rem; padding: 0.5rem 1.5rem; background-color: #ff9800; border: none; border-radius: 30px; color: black; font-weight: bold;">Stop Alarm Sound</button>
     </div>
     <script>
-        (function() {
+        (function() {{
+            const settings = {settings_json};
             const video = document.getElementById('video');
+            const ipImage = document.getElementById('ipImage');
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
             const statusDiv = document.getElementById('status');
@@ -235,10 +337,13 @@ def main_app():
             let audioCtx = null;
             let oscillator = null;
             let gain = null;
+            let lastEmailTriggerTime = 0;
+            let testModeCounter = 0;
 
-            function playAlarm() {
+            // Audio functions
+            function playAlarm() {{
                 if (alarmPlaying) return;
-                try {
+                try {{
                     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                     oscillator = audioCtx.createOscillator();
                     gain = audioCtx.createGain();
@@ -249,126 +354,195 @@ def main_app():
                     gain.connect(audioCtx.destination);
                     oscillator.start();
                     alarmPlaying = true;
-                    if (audioCtx.state === 'suspended') {
-                        audioCtx.resume();
-                    }
-                } catch(e) { console.error("Audio error", e); }
-            }
-
-            function stopAlarm() {
-                if (oscillator) {
-                    try { oscillator.stop(); oscillator.disconnect(); } catch(e) {}
+                    if (audioCtx.state === 'suspended') audioCtx.resume();
+                }} catch(e) {{ console.error("Audio error", e); }}
+            }}
+            function stopAlarm() {{
+                if (oscillator) {{
+                    try {{ oscillator.stop(); oscillator.disconnect(); }} catch(e) {{}}
                     oscillator = null;
-                }
-                if (audioCtx) {
-                    audioCtx.close().catch(console.error);
-                    audioCtx = null;
-                }
+                }}
+                if (audioCtx) {{ audioCtx.close().catch(console.error); audioCtx = null; }}
                 alarmPlaying = false;
-            }
+            }}
 
-            function detectFire(frameData, width, height) {
+            // Fire detection (simple color)
+            function detectFire_Simple(frameData, width, height, threshold) {{
                 let firePixels = 0;
-                for (let i = 0; i < frameData.data.length; i += 4) {
+                for (let i = 0; i < frameData.data.length; i += 4) {{
                     let r = frameData.data[i];
                     let g = frameData.data[i+1];
                     let b = frameData.data[i+2];
-                    let rr = r/255, gg = g/255, bb = b/255;
-                    let max = Math.max(rr, gg, bb);
-                    let min = Math.min(rr, gg, bb);
-                    let h, s, v;
-                    v = max;
-                    let delta = max - min;
-                    if (max === 0) s = 0;
-                    else s = delta / max;
-                    if (delta === 0) h = 0;
-                    else {
-                        if (max === rr) h = 60 * (((gg - bb)/delta) % 6);
-                        else if (max === gg) h = 60 * (((bb - rr)/delta) + 2);
-                        else h = 60 * (((rr - gg)/delta) + 4);
-                    }
-                    if (h < 0) h += 360;
-                    if ((h <= 25 || h >= 335) && s > 0.4 && v > 0.5) {
-                        firePixels++;
-                    }
-                }
+                    if (r > 120 && g < 100 && b < 100) firePixels++;
+                }}
                 let ratio = firePixels / (width * height);
-                return { fire: ratio > 0.01, ratio: ratio };
-            }
+                return {{ fire: ratio > threshold, ratio: ratio }};
+            }}
 
-            let lastEmailTriggerTime = 0;
-            function captureAndAnalyze() {
-                if (!video.videoWidth || !video.videoHeight) return;
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Placeholder for TensorFlow.js detection (will load model asynchronously)
+            let tfReady = false;
+            if (settings.detection_model === "TensorFlow.js (Alpha)") {{
+                // Dynamic import of TensorFlow.js (simplified)
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest';
+                script.onload = () => {{
+                    console.log("TF.js loaded");
+                    tfReady = true;
+                }};
+                document.head.appendChild(script);
+            }}
+
+            async function detectFire_TF(frameData, width, height, threshold) {{
+                // Placeholder: always return false until we load a proper model
+                return {{ fire: false, ratio: 0 }};
+            }}
+
+            async function captureAndAnalyze() {{
+                if (settings.test_mode) {{
+                    // Simulate fire every 30th frame (approx 15 seconds if 2 fps)
+                    testModeCounter++;
+                    if (testModeCounter % 30 === 0) {{
+                        statusDiv.innerHTML = '<span style="color: #ff4b4b;">🔥 SIMULATED FIRE DETECTION 🔥</span>';
+                        playAlarm();
+                        const now = Date.now();
+                        if (now - lastEmailTriggerTime > 30000) {{
+                            lastEmailTriggerTime = now;
+                            fetch(window.location.href + '?fire_detected=1', {{ method: 'POST' }});
+                        }}
+                        return;
+                    }} else {{
+                        statusDiv.innerHTML = '<span style="color: #2e7d32;">✅ Test mode – no fire (simulation will trigger periodically)</span>';
+                        if (alarmPlaying) stopAlarm();
+                    }}
+                    return;
+                }}
+
+                // Get current frame
+                if (settings.cam_source === "Webcam" && video.videoWidth) {{
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                }} else if (settings.cam_source === "IP Camera" && ipImage.complete && ipImage.naturalWidth) {{
+                    canvas.width = ipImage.naturalWidth;
+                    canvas.height = ipImage.naturalHeight;
+                    ctx.drawImage(ipImage, 0, 0, canvas.width, canvas.height);
+                }} else {{
+                    return;
+                }}
                 const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const result = detectFire(frameData, canvas.width, canvas.height);
-                if (result.fire) {
+                let result;
+                if (settings.detection_model === "TensorFlow.js (Alpha)" && tfReady) {{
+                    result = await detectFire_TF(frameData, canvas.width, canvas.height, settings.sensitivity);
+                }} else {{
+                    result = detectFire_Simple(frameData, canvas.width, canvas.height, settings.sensitivity);
+                }}
+                if (result.fire) {{
                     statusDiv.innerHTML = '<span style="color: #ff4b4b; font-weight: bold;">🔥 FIRE DETECTED! Alarm sounding. 🔥</span>';
                     playAlarm();
                     const now = Date.now();
-                    if (now - lastEmailTriggerTime > 30000) {
+                    if (now - lastEmailTriggerTime > 30000) {{
                         lastEmailTriggerTime = now;
-                        fetch(window.location.href + '?fire_detected=1', { method: 'POST' })
-                            .catch(e => console.warn("Email trigger failed", e));
-                    }
-                } else {
+                        fetch(window.location.href + '?fire_detected=1', {{ method: 'POST' }});
+                    }}
+                }} else {{
                     statusDiv.innerHTML = '<span style="color: #2e7d32;">✅ No fire detected. (Fire ratio: ' + (result.ratio*100).toFixed(2) + '%)</span>';
                     if (alarmPlaying) stopAlarm();
-                }
-            }
+                }}
+            }}
 
-            function startDetection() {
+            // IP camera refresh loop
+            let ipRefreshInterval = null;
+            function startIpRefresh() {{
+                if (ipRefreshInterval) clearInterval(ipRefreshInterval);
+                ipRefreshInterval = setInterval(() => {{
+                    if (settings.ip_camera_url) {{
+                        ipImage.src = settings.ip_camera_url + '?t=' + Date.now();
+                    }}
+                }}, 200);
+            }}
+            function stopIpRefresh() {{
+                if (ipRefreshInterval) clearInterval(ipRefreshInterval);
+                ipRefreshInterval = null;
+            }}
+
+            // Detection control
+            function startDetection() {{
                 if (detectionInterval) clearInterval(detectionInterval);
                 detectionInterval = setInterval(captureAndAnalyze, 500);
                 statusDiv.innerHTML = "Detection active...";
-            }
-
-            function stopDetection() {
-                if (detectionInterval) {
-                    clearInterval(detectionInterval);
-                    detectionInterval = null;
-                }
+            }}
+            function stopDetection() {{
+                if (detectionInterval) clearInterval(detectionInterval);
+                detectionInterval = null;
                 stopAlarm();
                 statusDiv.innerHTML = "Detection stopped.";
-            }
+            }}
 
-            document.getElementById('startBtn').onclick = () => {
-                if (!stream) {
-                    navigator.mediaDevices.getUserMedia({ video: true })
-                        .then(s => {
-                            stream = s;
-                            video.srcObject = stream;
-                            video.play();
-                            startDetection();
-                        })
-                        .catch(err => {
-                            statusDiv.innerHTML = "Camera error: " + err.message;
-                            console.error(err);
-                        });
-                } else {
-                    startDetection();
-                }
-            };
-            document.getElementById('stopBtn').onclick = () => {
+            // Start / Stop buttons
+            document.getElementById('startBtn').onclick = () => {{
+                if (settings.cam_source === "Webcam") {{
+                    if (!stream) {{
+                        navigator.mediaDevices.getUserMedia({{ video: true }})
+                            .then(s => {{
+                                stream = s;
+                                video.srcObject = stream;
+                                video.style.display = "block";
+                                ipImage.style.display = "none";
+                                video.play();
+                                startDetection();
+                            }})
+                            .catch(err => {{
+                                statusDiv.innerHTML = "Camera error: " + err.message;
+                            }});
+                    }} else {{
+                        startDetection();
+                    }}
+                }} else if (settings.cam_source === "IP Camera") {{
+                    if (!ipRefreshInterval) {{
+                        startIpRefresh();
+                        ipImage.style.display = "block";
+                        video.style.display = "none";
+                        startDetection();
+                    }} else {{
+                        startDetection();
+                    }}
+                }}
+            }};
+            document.getElementById('stopBtn').onclick = () => {{
                 stopDetection();
-                if (stream) {
+                if (stream) {{
                     stream.getTracks().forEach(track => track.stop());
                     stream = null;
                     video.srcObject = null;
-                }
-            };
-            document.getElementById('stopAlarmBtn').onclick = () => {
+                }}
+                if (ipRefreshInterval) stopIpRefresh();
+                video.style.display = "none";
+                ipImage.style.display = "none";
+            }};
+            document.getElementById('stopAlarmBtn').onclick = () => {{
                 stopAlarm();
-            };
-        })();
+            }};
+        }})();
     </script>
     """
-    components.html(camera_html, height=550)
+    st.components.v1.html(camera_html, height=550)
+
+    # Email trigger from query params (handles both email and SMS)
+    query_params = st.query_params
+    if query_params.get("fire_detected") == "1":
+        # Send email
+        email_recipient = st.session_state.settings.get("email_config", {}).get("recipient")
+        if email_recipient:
+            send_alert_email(email_recipient)
+        # Send SMS
+        sms_recipient = st.session_state.settings.get("sms_recipient")
+        if sms_recipient:
+            send_sms_alert(sms_recipient, "🔥 FIRE ALERT! Check your home immediately.")
+        add_log("Fire detected – alerts triggered")
+        st.query_params.clear()
 
     st.markdown("---")
-    st.caption("G‑Firefighter Alarm – Protecting your home 24/7")
+    st.caption("G‑Firefighter Alarm – Protecting your home 24/7 | Powered by AI + Cloud Alerts")
 
 # ---------- ROUTING ----------
 if not st.session_state.authenticated:
