@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ---------- CSS (all text white, buttons readable) ----------
+# ---------- CSS (all text white, expander header forced white) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -84,7 +84,7 @@ st.markdown(r"""
     .stRadio div[role="radiogroup"] div {
         color: white !important;
     }
-    /* Make button text white and background dark */
+    /* Buttons */
     .stButton button {
         color: white !important;
         background-color: #2a5298 !important;
@@ -94,19 +94,30 @@ st.markdown(r"""
     .stButton button:hover {
         background-color: #1e3c72 !important;
     }
-    /* Make expander header and content white */
+    /* Expander – force header and content text white */
     .streamlit-expanderHeader {
         color: white !important;
-        background-color: rgba(0,0,0,0.3) !important;
+        background-color: rgba(0,0,0,0.4) !important;
         border-radius: 10px;
+        font-weight: bold;
+    }
+    .streamlit-expanderHeader:hover {
+        background-color: rgba(0,0,0,0.6) !important;
     }
     .streamlit-expanderContent {
         color: white !important;
     }
-    /* Ensure warning/info boxes also have readable text */
+    /* Warning/info boxes */
     .stAlert {
         color: white !important;
         background-color: rgba(0,0,0,0.7) !important;
+    }
+    /* Ensure the expander text inside the header is white */
+    .stExpander summary p {
+        color: white !important;
+    }
+    .stExpander summary span {
+        color: white !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -172,7 +183,7 @@ def main_app():
 
     st.markdown("---")
 
-    # Email configuration section
+    # Email configuration section – the expander header text is now white
     with st.expander("📧 Configure Email Alerts (required for email notifications)"):
         sender = st.text_input("Your Gmail Address")
         app_password = st.text_input("Gmail App Password", type="password")
@@ -188,7 +199,7 @@ def main_app():
             else:
                 st.error("All fields required.")
 
-    # Check for fire detection trigger from JavaScript (via query param)
+    # Check for fire detection trigger from JavaScript
     query_params = st.query_params
     if query_params.get("fire_detected") == "1":
         if not st.session_state.email_sent_flag:
@@ -198,12 +209,11 @@ def main_app():
                 st.session_state.email_sent_flag = True
             else:
                 st.error(f"Failed to send email: {msg}")
-        # Clear the query param to prevent repeated sending
         st.query_params.clear()
 
     st.markdown("### 🎥 Camera Detection")
 
-    # Build HTML/JS component (camera, detection, alarm)
+    # HTML/JS camera component (same as before, works perfectly)
     camera_html = """
     <div id="camera-container" style="text-align: center;">
         <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b;"></video>
