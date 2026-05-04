@@ -44,7 +44,7 @@ def add_log(msg):
     if len(st.session_state.logs) > 50:
         st.session_state.logs = st.session_state.logs[:50]
 
-# ---------- CSS (same as before, with sidebar adjustments) ----------
+# ---------- CSS (all white text, sidebar fixed) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -94,7 +94,7 @@ st.markdown(r"""
         .logo-text { font-size: 1.8rem; }
         .fire-alert { font-size: 1.2rem; }
     }
-    /* Make all normal text white */
+    /* Main area text */
     .stMarkdown, .stRadio label, .stTextInput label, .stButton button p, .stCaption {
         color: white !important;
     }
@@ -116,6 +116,7 @@ st.markdown(r"""
     .stRadio div[role="radiogroup"] div {
         color: white !important;
     }
+    /* Buttons */
     .stButton button {
         color: white !important;
         background-color: #2a5298 !important;
@@ -125,23 +126,37 @@ st.markdown(r"""
     .stButton button:hover {
         background-color: #1e3c72 !important;
     }
+    /* Expander in main and sidebar */
     .streamlit-expanderHeader {
         color: white !important;
         background-color: rgba(0,0,0,0.4) !important;
         border-radius: 10px;
         font-weight: bold;
     }
-    .stAlert {
-        color: white !important;
-        background-color: rgba(0,0,0,0.7) !important;
+    .streamlit-expanderHeader:hover {
+        background-color: rgba(0,0,0,0.6) !important;
     }
-    /* Sidebar text white */
+    .streamlit-expanderContent {
+        color: white !important;
+    }
+    /* Sidebar specific - force everything white */
     [data-testid="stSidebar"] {
         background: #0a0f2a;
     }
-    [data-testid="stSidebar"] .stMarkdown, 
-    [data-testid="stSidebar"] label {
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] .streamlit-expanderHeader,
+    [data-testid="stSidebar"] .stCheckbox label span,
+    [data-testid="stSidebar"] .stSlider label {
         color: white !important;
+    }
+    .stCheckbox label span {
+        color: white !important;
+    }
+    /* Alert boxes */
+    .stAlert {
+        color: white !important;
+        background-color: rgba(0,0,0,0.7) !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -184,7 +199,7 @@ def send_sms_alert(to_phone, message):
         add_log(f"SMS error: {e}")
         return False
 
-# ---------- SEND EMAIL (existing, extended) ----------
+# ---------- SEND EMAIL ----------
 def send_alert_email(recipient=None):
     email_config = st.session_state.settings.get("email_config", {})
     if not email_config.get("sender") or not email_config.get("password"):
@@ -240,7 +255,7 @@ def sidebar_config():
         min_value=0.5, max_value=5.0, value=1.0, step=0.1)
     st.session_state.settings["sensitivity"] = sensitivity / 100.0
 
-    # Alerts
+    # Email alerts
     st.sidebar.subheader("📧 Email Alerts")
     with st.sidebar.expander("Configure Email"):
         sender = st.text_input("Your Gmail", value=st.session_state.settings.get("email_config", {}).get("sender", ""))
@@ -254,6 +269,7 @@ def sidebar_config():
             }
             st.success("Email settings saved")
 
+    # SMS alerts
     st.sidebar.subheader("📱 SMS Alerts (Twilio)")
     with st.sidebar.expander("Configure SMS"):
         twilio_sid = st.text_input("Account SID", value=st.session_state.settings.get("twilio_account_sid", ""))
@@ -267,6 +283,7 @@ def sidebar_config():
             st.session_state.settings["sms_recipient"] = sms_recipient
             st.success("SMS settings saved")
 
+    # Test mode
     st.sidebar.subheader("🧪 Test Mode")
     test_mode = st.sidebar.checkbox("Simulate fire every 30 sec (no real alert)", 
         value=st.session_state.settings.get("test_mode", False))
@@ -287,7 +304,6 @@ def sidebar_config():
 
 # ---------- MAIN APP ----------
 def main_app():
-    # Always show sidebar config
     sidebar_config()
 
     # Main area
@@ -303,8 +319,7 @@ def main_app():
 
     st.markdown("---")
 
-    # Camera and detection view (HTML component)
-    # We'll pass settings as a JSON string to JavaScript
+    # Camera HTML component with settings injected
     settings_json = json.dumps({
         "cam_source": st.session_state.settings.get("cam_source", "Webcam"),
         "ip_camera_url": st.session_state.settings.get("ip_camera_url", ""),
@@ -340,7 +355,6 @@ def main_app():
             let lastEmailTriggerTime = 0;
             let testModeCounter = 0;
 
-            // Audio functions
             function playAlarm() {{
                 if (alarmPlaying) return;
                 try {{
@@ -366,7 +380,6 @@ def main_app():
                 alarmPlaying = false;
             }}
 
-            // Fire detection (simple color)
             function detectFire_Simple(frameData, width, height, threshold) {{
                 let firePixels = 0;
                 for (let i = 0; i < frameData.data.length; i += 4) {{
@@ -379,27 +392,20 @@ def main_app():
                 return {{ fire: ratio > threshold, ratio: ratio }};
             }}
 
-            // Placeholder for TensorFlow.js detection (will load model asynchronously)
             let tfReady = false;
             if (settings.detection_model === "TensorFlow.js (Alpha)") {{
-                // Dynamic import of TensorFlow.js (simplified)
                 const script = document.createElement('script');
                 script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest';
-                script.onload = () => {{
-                    console.log("TF.js loaded");
-                    tfReady = true;
-                }};
+                script.onload = () => {{ console.log("TF.js loaded"); tfReady = true; }};
                 document.head.appendChild(script);
             }}
 
             async function detectFire_TF(frameData, width, height, threshold) {{
-                // Placeholder: always return false until we load a proper model
                 return {{ fire: false, ratio: 0 }};
             }}
 
             async function captureAndAnalyze() {{
                 if (settings.test_mode) {{
-                    // Simulate fire every 30th frame (approx 15 seconds if 2 fps)
                     testModeCounter++;
                     if (testModeCounter % 30 === 0) {{
                         statusDiv.innerHTML = '<span style="color: #ff4b4b;">🔥 SIMULATED FIRE DETECTION 🔥</span>';
@@ -417,7 +423,6 @@ def main_app():
                     return;
                 }}
 
-                // Get current frame
                 if (settings.cam_source === "Webcam" && video.videoWidth) {{
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
@@ -450,7 +455,6 @@ def main_app():
                 }}
             }}
 
-            // IP camera refresh loop
             let ipRefreshInterval = null;
             function startIpRefresh() {{
                 if (ipRefreshInterval) clearInterval(ipRefreshInterval);
@@ -465,7 +469,6 @@ def main_app():
                 ipRefreshInterval = null;
             }}
 
-            // Detection control
             function startDetection() {{
                 if (detectionInterval) clearInterval(detectionInterval);
                 detectionInterval = setInterval(captureAndAnalyze, 500);
@@ -478,7 +481,6 @@ def main_app():
                 statusDiv.innerHTML = "Detection stopped.";
             }}
 
-            // Start / Stop buttons
             document.getElementById('startBtn').onclick = () => {{
                 if (settings.cam_source === "Webcam") {{
                     if (!stream) {{
@@ -527,14 +529,12 @@ def main_app():
     """
     st.components.v1.html(camera_html, height=550)
 
-    # Email trigger from query params (handles both email and SMS)
+    # Handle fire detection trigger (email + SMS)
     query_params = st.query_params
     if query_params.get("fire_detected") == "1":
-        # Send email
         email_recipient = st.session_state.settings.get("email_config", {}).get("recipient")
         if email_recipient:
             send_alert_email(email_recipient)
-        # Send SMS
         sms_recipient = st.session_state.settings.get("sms_recipient")
         if sms_recipient:
             send_sms_alert(sms_recipient, "🔥 FIRE ALERT! Check your home immediately.")
