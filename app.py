@@ -297,6 +297,29 @@ def sidebar_config():
         st.session_state.settings = load_settings()
         st.rerun()
 
+    # ========== PRICING SECTION (ADDED) ==========
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("💰 Pricing Plans")
+    st.sidebar.markdown("""
+    **One‑time Purchase (Lifetime License)**  
+    – $99 USD  
+    – Includes all features (webcam/IP camera, email, SMS, test mode)  
+    – Free updates for one year, then $19/year optional
+
+    **Monthly Subscription**  
+    – $9.99 USD / month  
+    – Cancel anytime  
+    – Same features as lifetime
+
+    **Professional Plan**  
+    – $49 USD / month  
+    – Monitor up to 5 cameras simultaneously  
+    – Priority email support  
+    – Extended log retention (90 days)
+
+    *All plans include basic email support. Volume discounts available for businesses.*
+    """)
+
     # Log viewer
     st.sidebar.subheader("📜 Recent Logs")
     for log in st.session_state.logs[:10]:
