@@ -240,6 +240,16 @@ def send_alert_email(recipient=None):
 
 # ---------- SIDEBAR CONFIGURATION ----------
 def sidebar_config():
+    # Company info at the top of sidebar
+    st.sidebar.markdown("""
+    **G‑Firefighter Alarm**  
+    **GlobalInternet.py**  
+    Built by Gesner Deslandes  
+    📧 deslandes78@gmail.com  
+    📞 (509)-47385663
+    """)
+    st.sidebar.markdown("---")
+    
     st.sidebar.title("⚙️ Real‑Life Configuration")
 
     # Camera source
