@@ -1,7 +1,5 @@
 import streamlit as st
-import cv2
-import numpy as np
-from PIL import Image
+import streamlit.components.v1 as components
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -14,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ---------- CSS (raw string to avoid comment issues) ----------
+# ---------- CSS ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -60,15 +58,6 @@ st.markdown(r"""
         font-weight: bold;
         color: white !important;
     }
-    .stop-alarm-btn {
-        background-color: #ff9800;
-        color: black;
-        font-weight: bold;
-        padding: 0.5rem 1rem;
-        border-radius: 30px;
-        border: none;
-        margin-top: 10px;
-    }
     @media (max-width: 768px) {
         .logo-text { font-size: 1.8rem; }
         .fire-alert { font-size: 1.2rem; }
@@ -100,16 +89,8 @@ st.markdown(r"""
 # ---------- LOGIN STATE ----------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-if "detection_active" not in st.session_state:
-    st.session_state.detection_active = False
-if "email_sent" not in st.session_state:
-    st.session_state.email_sent = False
-if "alarm_playing" not in st.session_state:
-    st.session_state.alarm_playing = False
-if "camera_ready" not in st.session_state:
-    st.session_state.camera_ready = False
-if "camera_cap" not in st.session_state:
-    st.session_state.camera_cap = None
+if "email_config" not in st.session_state:
+    st.session_state.email_config = None
 
 # ---------- LOGIN PAGE ----------
 def login_page():
@@ -123,260 +104,248 @@ def login_page():
         else:
             st.error("Incorrect password.")
 
-# ---------- EMAIL ALERT FUNCTION ----------
+# ---------- EMAIL SENDER (called from backend) ----------
 def send_alert_email():
-    if "email_config" not in st.session_state:
-        st.session_state.email_config = None
-
     if st.session_state.email_config is None:
-        st.warning("⚠️ To send an email alert, please enter your email credentials below. They will not be saved permanently.")
-        sender_email = st.text_input("Your Email (Gmail recommended)")
-        sender_password = st.text_input("App Password (for Gmail)", type="password")
-        recipient_email = st.text_input("House Owner's Email")
+        st.warning("Please configure email settings first.")
+        return False
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = st.session_state.email_config["sender"]
+        msg["To"] = st.session_state.email_config["recipient"]
+        msg["Subject"] = "🔥 FIRE ALERT - G-Firefighter Alarm System"
+        body = f"""
+        ALERT: Fire has been detected by your G-Firefighter Alarm system.
+        Please call the fire department immediately.
+        
+        Time: {time.ctime()}
+        
+        This is an automated message from your home security system.
+        """
+        msg.attach(MIMEText(body, "plain"))
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(st.session_state.email_config["sender"], st.session_state.email_config["password"])
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Email failed: {e}")
+        return False
+
+# ---------- MAIN APP (browser camera + JS detection) ----------
+def main_app():
+    st.markdown('<div style="display: flex; align-items: center; justify-content: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
+    st.title("🔥 Live Fire Detection")
+    st.markdown("**Camera feed** – we analyze for flames. Alarm + Email on detection.")
+
+    # Logout button
+    if st.button("Logout"):
+        st.session_state.authenticated = False
+        st.rerun()
+
+    st.markdown("---")
+
+    # Email configuration section
+    with st.expander("📧 Configure Email Alerts (required for email notifications)"):
+        sender = st.text_input("Your Gmail Address")
+        app_password = st.text_input("Gmail App Password", type="password")
+        recipient = st.text_input("House Owner's Email Address")
         if st.button("Save Email Settings"):
-            if sender_email and sender_password and recipient_email:
+            if sender and app_password and recipient:
                 st.session_state.email_config = {
-                    "sender": sender_email,
-                    "password": sender_password,
-                    "recipient": recipient_email
+                    "sender": sender,
+                    "password": app_password,
+                    "recipient": recipient
                 }
-                st.success("Settings saved. Detection will now send emails.")
-                st.rerun()
+                st.success("Email settings saved.")
             else:
                 st.error("All fields required.")
-        return False
-    else:
-        try:
-            msg = MIMEMultipart()
-            msg["From"] = st.session_state.email_config["sender"]
-            msg["To"] = st.session_state.email_config["recipient"]
-            msg["Subject"] = "🔥 FIRE ALERT - G-Firefighter Alarm System"
-            body = f"""
-            ALERT: Fire has been detected by your G-Firefighter Alarm system.
-            Please call the fire department immediately.
-            
-            Time: {time.ctime()}
-            
-            This is an automated message from your home security system.
-            """
-            msg.attach(MIMEText(body, "plain"))
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(st.session_state.email_config["sender"], st.session_state.email_config["password"])
-            server.send_message(msg)
-            server.quit()
-            return True
-        except Exception as e:
-            st.error(f"Failed to send email: {e}")
-            return False
 
-# ---------- FIRE DETECTION FUNCTION ----------
-def detect_fire(frame):
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    lower_red1 = np.array([0, 100, 100])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([160, 100, 100])
-    upper_red2 = np.array([180, 255, 255])
-    lower_orange = np.array([10, 100, 100])
-    upper_orange = np.array([25, 255, 255])
-    
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask3 = cv2.inRange(hsv, lower_orange, upper_orange)
-    mask = cv2.bitwise_or(mask1, mask2)
-    mask = cv2.bitwise_or(mask, mask3)
-    
-    fire_pixels = np.sum(mask > 0)
-    total_pixels = frame.shape[0] * frame.shape[1]
-    fire_ratio = fire_pixels / total_pixels
-    return fire_ratio > 0.01, fire_ratio
+    # The actual camera and detection UI is an HTML component
+    # because only JavaScript can access the camera.
+    # We will embed an HTML/JS page that:
+    # - Requests camera
+    # - Shows video
+    # - Periodically analyzes frames for fire colors
+    # - Plays alarm sound and calls a Streamlit endpoint to send email.
+    #
+    # To call Streamlit backend from JavaScript, we use a hidden form
+    # that sends a POST request to a Streamlit endpoint.
+    # We'll create a simple Streamlit endpoint via st.form and query parameters.
 
-# ---------- JAVASCRIPT ALARM ----------
-def get_alarm_js(action):
-    if action == "start":
-        return """
-        <script>
-            if (typeof window.alarmOscillator === 'undefined' || window.alarmOscillator === null) {
+    st.markdown("### 🎥 Camera Detection")
+
+    # Build HTML/JS component
+    camera_html = """
+    <div id="camera-container" style="text-align: center;">
+        <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b;"></video>
+        <canvas id="canvas" style="display: none;"></canvas>
+        <div id="status" style="margin-top: 1rem; padding: 0.5rem; border-radius: 20px; background: rgba(0,0,0,0.7); color: white;"></div>
+        <button id="startBtn" style="margin-top: 1rem; padding: 0.5rem 1.5rem; background-color: #ff4b4b; border: none; border-radius: 30px; color: white; font-weight: bold;">Start Detection</button>
+        <button id="stopBtn" style="margin-top: 1rem; margin-left: 1rem; padding: 0.5rem 1.5rem; background-color: #555; border: none; border-radius: 30px; color: white; font-weight: bold;">Stop Detection</button>
+        <button id="stopAlarmBtn" style="margin-top: 1rem; margin-left: 1rem; padding: 0.5rem 1.5rem; background-color: #ff9800; border: none; border-radius: 30px; color: black; font-weight: bold;">Stop Alarm Sound</button>
+    </div>
+    <script>
+        (function() {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const statusDiv = document.getElementById('status');
+            let stream = null;
+            let detectionInterval = null;
+            let alarmPlaying = false;
+            let audioCtx = null;
+            let oscillator = null;
+            let gain = null;
+
+            function playAlarm() {
+                if (alarmPlaying) return;
                 try {
-                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                    const oscillator = audioCtx.createOscillator();
-                    const gain = audioCtx.createGain();
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    oscillator = audioCtx.createOscillator();
+                    gain = audioCtx.createGain();
                     oscillator.type = 'sawtooth';
                     oscillator.frequency.value = 880;
                     gain.gain.value = 0.5;
                     oscillator.connect(gain);
                     gain.connect(audioCtx.destination);
                     oscillator.start();
-                    window.alarmOscillator = oscillator;
-                    window.alarmGain = gain;
-                    window.alarmCtx = audioCtx;
+                    alarmPlaying = true;
                     if (audioCtx.state === 'suspended') {
                         audioCtx.resume();
                     }
-                } catch(e) { console.error("Web Audio not supported", e); }
+                } catch(e) { console.error("Audio error", e); }
             }
-        </script>
-        """
-    else:
-        return """
-        <script>
-            if (window.alarmOscillator) {
-                try {
-                    window.alarmOscillator.stop();
-                    window.alarmOscillator.disconnect();
-                } catch(e) {}
-                window.alarmOscillator = null;
+
+            function stopAlarm() {
+                if (oscillator) {
+                    try { oscillator.stop(); oscillator.disconnect(); } catch(e) {}
+                    oscillator = null;
+                }
+                if (audioCtx) {
+                    audioCtx.close().catch(console.error);
+                    audioCtx = null;
+                }
+                alarmPlaying = false;
             }
-            if (window.alarmCtx) {
-                window.alarmCtx.close().catch(console.error);
-                window.alarmCtx = null;
+
+            // Simple fire detection using HSV color range (same as Python version)
+            function detectFire(frameData, width, height) {
+                // frameData is ImageData (RGBA)
+                let firePixels = 0;
+                for (let i = 0; i < frameData.data.length; i += 4) {
+                    let r = frameData.data[i];
+                    let g = frameData.data[i+1];
+                    let b = frameData.data[i+2];
+                    // Convert RGB to HSV (approximate)
+                    let rr = r/255, gg = g/255, bb = b/255;
+                    let max = Math.max(rr, gg, bb);
+                    let min = Math.min(rr, gg, bb);
+                    let h, s, v;
+                    v = max;
+                    let delta = max - min;
+                    if (max === 0) s = 0;
+                    else s = delta / max;
+                    if (delta === 0) h = 0;
+                    else {
+                        if (max === rr) h = 60 * (((gg - bb)/delta) % 6);
+                        else if (max === gg) h = 60 * (((bb - rr)/delta) + 2);
+                        else h = 60 * (((rr - gg)/delta) + 4);
+                    }
+                    if (h < 0) h += 360;
+                    // Fire colors: red/orange hues (0-25 and 335-360) with high saturation and value
+                    if ((h <= 25 || h >= 335) && s > 0.4 && v > 0.5) {
+                        firePixels++;
+                    }
+                }
+                let ratio = firePixels / (width * height);
+                return { fire: ratio > 0.01, ratio: ratio };
             }
-        </script>
-        """
 
-# ---------- MAIN APP ----------
-def main_app():
-    st.markdown('<div style="display: flex; align-items: center; justify-content: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
-    st.title("🔥 Live Fire Detection")
-    st.markdown("**Camera or image upload** – we analyze for flames. Alarm + Email on detection.")
+            function captureAndAnalyze() {
+                if (!video.videoWidth || !video.videoHeight) return;
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const result = detectFire(frameData, canvas.width, canvas.height);
+                if (result.fire) {
+                    statusDiv.innerHTML = '<span style="color: #ff4b4b; font-weight: bold;">🔥 FIRE DETECTED! Alarm sounding. 🔥</span>';
+                    playAlarm();
+                    // Send email via Streamlit endpoint (using a fetch to the same page with query param)
+                    fetch(window.location.href + '?fire_detected=1', { method: 'POST' })
+                        .catch(e => console.warn("Email trigger failed", e));
+                } else {
+                    statusDiv.innerHTML = '<span style="color: #2e7d32;">✅ No fire detected. (Fire ratio: ' + (result.ratio*100).toFixed(2) + '%)</span>';
+                    // stop alarm if fire gone
+                    if (alarmPlaying) stopAlarm();
+                }
+            }
 
-    if st.button("Logout"):
-        # close camera if open
-        if st.session_state.camera_cap is not None:
-            st.session_state.camera_cap.release()
-            st.session_state.camera_cap = None
-        st.components.v1.html(get_alarm_js("stop"), height=0)
-        st.session_state.authenticated = False
-        st.session_state.detection_active = False
-        st.session_state.email_sent = False
-        st.session_state.alarm_playing = False
-        st.session_state.camera_ready = False
-        st.rerun()
+            function startDetection() {
+                if (detectionInterval) clearInterval(detectionInterval);
+                detectionInterval = setInterval(captureAndAnalyze, 500); // every 0.5 sec
+                statusDiv.innerHTML = "Detection active...";
+            }
 
-    st.markdown("---")
+            function stopDetection() {
+                if (detectionInterval) {
+                    clearInterval(detectionInterval);
+                    detectionInterval = null;
+                }
+                stopAlarm();
+                statusDiv.innerHTML = "Detection stopped.";
+            }
 
-    source = st.radio("Select input source:", ["Camera (Webcam)", "Upload Image"])
-    frame_placeholder = st.empty()
-    status_placeholder = st.empty()
+            document.getElementById('startBtn').onclick = () => {
+                if (!stream) {
+                    // request camera
+                    navigator.mediaDevices.getUserMedia({ video: true })
+                        .then(s => {
+                            stream = s;
+                            video.srcObject = stream;
+                            video.play();
+                            startDetection();
+                        })
+                        .catch(err => {
+                            statusDiv.innerHTML = "Camera error: " + err.message;
+                            console.error(err);
+                        });
+                } else {
+                    startDetection();
+                }
+            };
+            document.getElementById('stopBtn').onclick = () => {
+                stopDetection();
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                    video.srcObject = null;
+                }
+            };
+            document.getElementById('stopAlarmBtn').onclick = () => {
+                stopAlarm();
+            };
+        })();
+    </script>
+    """
+    components.html(camera_html, height=500)
 
-    if st.button("🔊 Stop Alarm Now", key="stop_alarm_btn"):
-        st.components.v1.html(get_alarm_js("stop"), height=0)
-        st.session_state.alarm_playing = False
-        st.success("Alarm silenced.")
-
-    if source == "Camera (Webcam)":
-        # ---- Camera Permission Request ----
-        if not st.session_state.camera_ready:
-            if st.button("📷 Request Camera Access"):
-                cap = cv2.VideoCapture(0)
-                if cap.isOpened():
-                    st.session_state.camera_cap = cap
-                    st.session_state.camera_ready = True
-                    st.success("Camera access granted! You can now start detection.")
-                    # show a one-time preview to confirm
-                    ret, frame = cap.read()
-                    if ret:
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
-                    st.rerun()
-                else:
-                    st.error("Could not access camera. Please check permissions and try again.")
+    # Handle email sending when fire is detected (via POST)
+    # We'll use a hidden endpoint using st.experimental_get_query_params
+    query_params = st.experimental_get_query_params()
+    if query_params.get("fire_detected") == ["1"]:
+        if st.session_state.email_config:
+            if send_alert_email():
+                st.success("Alert email sent to house owner.")
             else:
-                st.info("Click 'Request Camera Access' to allow the app to use your webcam.")
+                st.error("Failed to send email. Check your email settings.")
         else:
-            st.success("✅ Camera access already granted.")
-
-        # ---- Start/Stop Detection ----
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Start Detection", disabled=not st.session_state.camera_ready):
-                if st.session_state.camera_cap is None or not st.session_state.camera_cap.isOpened():
-                    # fallback: try to reopen
-                    cap = cv2.VideoCapture(0)
-                    if cap.isOpened():
-                        st.session_state.camera_cap = cap
-                        st.session_state.camera_ready = True
-                    else:
-                        st.error("Camera is not ready. Please request access again.")
-                        st.stop()
-                st.session_state.detection_active = True
-                st.session_state.email_sent = False
-                st.session_state.alarm_playing = False
-                st.components.v1.html(get_alarm_js("stop"), height=0)
-                st.rerun()
-        with col2:
-            if st.button("Stop Detection"):
-                st.session_state.detection_active = False
-                # stop alarm
-                st.components.v1.html(get_alarm_js("stop"), height=0)
-                st.session_state.alarm_playing = False
-                # clear any displayed frames
-                frame_placeholder.empty()
-                st.rerun()
-
-        # ---- Detection Loop ----
-        if st.session_state.detection_active and st.session_state.camera_ready:
-            cap = st.session_state.camera_cap
-            if not cap.isOpened():
-                st.error("Camera lost. Please request access again.")
-                st.session_state.detection_active = False
-                st.session_state.camera_ready = False
-                st.rerun()
-            else:
-                st.info("Detection running... looking for fire. Alarm will sound if fire detected.")
-                while st.session_state.detection_active:
-                    ret, frame = cap.read()
-                    if not ret:
-                        st.warning("Failed to grab frame. Restart detection.")
-                        break
-                    frame = cv2.flip(frame, 1)
-                    fire_detected, ratio = detect_fire(frame)
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
-
-                    if fire_detected and not st.session_state.alarm_playing:
-                        st.components.v1.html(get_alarm_js("start"), height=0)
-                        st.session_state.alarm_playing = True
-                    elif not fire_detected and st.session_state.alarm_playing:
-                        st.components.v1.html(get_alarm_js("stop"), height=0)
-                        st.session_state.alarm_playing = False
-
-                    if fire_detected and not st.session_state.email_sent:
-                        status_placeholder.markdown('<div class="fire-alert">🔥🔥 FIRE DETECTED! Sending alert & alarm sounding... 🔥🔥</div>', unsafe_allow_html=True)
-                        if send_alert_email():
-                            st.session_state.email_sent = True
-                            status_placeholder.markdown('<div class="fire-alert">🚨 ALERT SENT! Fire department notified. Alarm active. 🚨</div>', unsafe_allow_html=True)
-                        else:
-                            status_placeholder.error("Email sending failed.")
-                    elif fire_detected and st.session_state.email_sent:
-                        status_placeholder.markdown('<div class="fire-alert">🔥 FIRE STILL PRESENT – Alarm sounding. Alert already sent. 🔥</div>', unsafe_allow_html=True)
-                    else:
-                        status_placeholder.markdown(f'<div class="status-safe">✅ No fire detected. (Fire ratio: {ratio:.2%})</div>', unsafe_allow_html=True)
-                    
-                    time.sleep(0.1)
-                # Loop ended because detection_active became False
-                st.rerun()
-
-    else:  # Upload Image
-        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file)
-            frame = np.array(image)
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            fire_detected, ratio = detect_fire(frame_bgr)
-            st.image(image, caption="Uploaded Image", use_container_width=True)
-            if fire_detected:
-                st.markdown('<div class="fire-alert">🔥 FIRE DETECTED in this image! 🔥</div>', unsafe_allow_html=True)
-                st.components.v1.html(get_alarm_js("start"), height=0)
-                if st.button("Send Emergency Email"):
-                    if send_alert_email():
-                        st.success("Alert email sent to house owner!")
-                    else:
-                        st.error("Email configuration required.")
-                if st.button("Stop Alarm"):
-                    st.components.v1.html(get_alarm_js("stop"), height=0)
-            else:
-                st.markdown(f'<div class="status-safe">✅ No fire detected (fire ratio: {ratio:.2%})</div>', unsafe_allow_html=True)
+            st.warning("Email not configured. Please configure email alerts in the section above.")
+        # clear the query param to avoid infinite loop
+        st.experimental_set_query_params()
 
     st.markdown("---")
     st.caption("G‑Firefighter Alarm – Protecting your home 24/7")
