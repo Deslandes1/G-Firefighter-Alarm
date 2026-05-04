@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ---------- CSS (using raw string to avoid comment issues) ----------
+# ---------- CSS (raw string to avoid comment issues) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -106,6 +106,10 @@ if "email_sent" not in st.session_state:
     st.session_state.email_sent = False
 if "alarm_playing" not in st.session_state:
     st.session_state.alarm_playing = False
+if "camera_ready" not in st.session_state:
+    st.session_state.camera_ready = False
+if "camera_cap" not in st.session_state:
+    st.session_state.camera_cap = None
 
 # ---------- LOGIN PAGE ----------
 def login_page():
@@ -237,11 +241,16 @@ def main_app():
     st.markdown("**Camera or image upload** – we analyze for flames. Alarm + Email on detection.")
 
     if st.button("Logout"):
+        # close camera if open
+        if st.session_state.camera_cap is not None:
+            st.session_state.camera_cap.release()
+            st.session_state.camera_cap = None
         st.components.v1.html(get_alarm_js("stop"), height=0)
         st.session_state.authenticated = False
         st.session_state.detection_active = False
         st.session_state.email_sent = False
         st.session_state.alarm_playing = False
+        st.session_state.camera_ready = False
         st.rerun()
 
     st.markdown("---")
@@ -256,27 +265,69 @@ def main_app():
         st.success("Alarm silenced.")
 
     if source == "Camera (Webcam)":
-        if st.button("Start Detection"):
-            st.session_state.detection_active = True
-            st.session_state.email_sent = False
-            st.session_state.alarm_playing = False
-            st.components.v1.html(get_alarm_js("stop"), height=0)
-        if st.button("Stop Detection"):
-            st.session_state.detection_active = False
-            st.components.v1.html(get_alarm_js("stop"), height=0)
-            st.session_state.alarm_playing = False
-            st.rerun()
+        # ---- Camera Permission Request ----
+        if not st.session_state.camera_ready:
+            if st.button("📷 Request Camera Access"):
+                cap = cv2.VideoCapture(0)
+                if cap.isOpened():
+                    st.session_state.camera_cap = cap
+                    st.session_state.camera_ready = True
+                    st.success("Camera access granted! You can now start detection.")
+                    # show a one-time preview to confirm
+                    ret, frame = cap.read()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                    st.rerun()
+                else:
+                    st.error("Could not access camera. Please check permissions and try again.")
+            else:
+                st.info("Click 'Request Camera Access' to allow the app to use your webcam.")
+        else:
+            st.success("✅ Camera access already granted.")
 
-        if st.session_state.detection_active:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                st.error("Cannot access webcam. Please allow permissions.")
+        # ---- Start/Stop Detection ----
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Start Detection", disabled=not st.session_state.camera_ready):
+                if st.session_state.camera_cap is None or not st.session_state.camera_cap.isOpened():
+                    # fallback: try to reopen
+                    cap = cv2.VideoCapture(0)
+                    if cap.isOpened():
+                        st.session_state.camera_cap = cap
+                        st.session_state.camera_ready = True
+                    else:
+                        st.error("Camera is not ready. Please request access again.")
+                        st.stop()
+                st.session_state.detection_active = True
+                st.session_state.email_sent = False
+                st.session_state.alarm_playing = False
+                st.components.v1.html(get_alarm_js("stop"), height=0)
+                st.rerun()
+        with col2:
+            if st.button("Stop Detection"):
                 st.session_state.detection_active = False
+                # stop alarm
+                st.components.v1.html(get_alarm_js("stop"), height=0)
+                st.session_state.alarm_playing = False
+                # clear any displayed frames
+                frame_placeholder.empty()
+                st.rerun()
+
+        # ---- Detection Loop ----
+        if st.session_state.detection_active and st.session_state.camera_ready:
+            cap = st.session_state.camera_cap
+            if not cap.isOpened():
+                st.error("Camera lost. Please request access again.")
+                st.session_state.detection_active = False
+                st.session_state.camera_ready = False
+                st.rerun()
             else:
                 st.info("Detection running... looking for fire. Alarm will sound if fire detected.")
                 while st.session_state.detection_active:
                     ret, frame = cap.read()
                     if not ret:
+                        st.warning("Failed to grab frame. Restart detection.")
                         break
                     frame = cv2.flip(frame, 1)
                     fire_detected, ratio = detect_fire(frame)
@@ -303,12 +354,10 @@ def main_app():
                         status_placeholder.markdown(f'<div class="status-safe">✅ No fire detected. (Fire ratio: {ratio:.2%})</div>', unsafe_allow_html=True)
                     
                     time.sleep(0.1)
-                cap.release()
-                st.components.v1.html(get_alarm_js("stop"), height=0)
-                st.session_state.detection_active = False
+                # Loop ended because detection_active became False
                 st.rerun()
 
-    else:
+    else:  # Upload Image
         uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
         if uploaded_file is not None:
             image = Image.open(uploaded_file)
