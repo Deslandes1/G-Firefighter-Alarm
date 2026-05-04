@@ -44,7 +44,7 @@ def add_log(msg):
     if len(st.session_state.logs) > 50:
         st.session_state.logs = st.session_state.logs[:50]
 
-# ---------- CSS (all white text, sidebar fixed) ----------
+# ---------- CSS (with spinning fire) ----------
 st.markdown(r"""
 <style>
     .stApp {
@@ -66,6 +66,14 @@ st.markdown(r"""
         color: #ff6b6b;
         display: inline-block;
         margin-right: 10px;
+    }
+    .spinning-fire {
+        display: inline-block;
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
     .fire-alert {
         background-color: #ff4b4b;
@@ -139,7 +147,7 @@ st.markdown(r"""
     .streamlit-expanderContent {
         color: white !important;
     }
-    /* Sidebar specific - force everything white */
+    /* Sidebar specific */
     [data-testid="stSidebar"] {
         background: #0a0f2a;
     }
@@ -163,7 +171,7 @@ st.markdown(r"""
 
 # ---------- LOGIN PAGE ----------
 def login_page():
-    st.markdown('<div class="logo-text">🚒 G‑Firefighter Alarm 🔥</div>', unsafe_allow_html=True)
+    st.markdown('<div class="logo-text">🚒 G‑Firefighter Alarm <span class="spinning-fire">🔥</span></div>', unsafe_allow_html=True)
     st.markdown("### 🔐 Secure Access")
     password = st.text_input("Enter Password", type="password")
     if st.button("Login"):
@@ -297,7 +305,7 @@ def sidebar_config():
         st.session_state.settings = load_settings()
         st.rerun()
 
-    # ========== PRICING SECTION (ADDED) ==========
+    # Pricing section
     st.sidebar.markdown("---")
     st.sidebar.subheader("💰 Pricing Plans")
     st.sidebar.markdown("""
@@ -329,12 +337,12 @@ def sidebar_config():
 def main_app():
     sidebar_config()
 
-    # Main area
+    # Main area logo with spinning fire
+    st.markdown('<div style="display: flex; align-items: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small spinning-fire">🔥</span></div>', unsafe_allow_html=True)
+    st.title("🔥 Live Fire Detection")
+    st.markdown("**Real‑time monitoring** – AI + color detection, email & SMS alerts")
+
     col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown('<div style="display: flex; align-items: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
-        st.title("🔥 Live Fire Detection")
-        st.markdown("**Real‑time monitoring** – AI + color detection, email & SMS alerts")
     with col2:
         if st.button("Logout"):
             st.session_state.authenticated = False
@@ -342,7 +350,7 @@ def main_app():
 
     st.markdown("---")
 
-    # Camera HTML component with settings injected
+    # Camera HTML component with settings injected (unchanged)
     settings_json = json.dumps({
         "cam_source": st.session_state.settings.get("cam_source", "Webcam"),
         "ip_camera_url": st.session_state.settings.get("ip_camera_url", ""),
