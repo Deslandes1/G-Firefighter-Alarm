@@ -91,6 +91,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "email_config" not in st.session_state:
     st.session_state.email_config = None
+if "email_sent_flag" not in st.session_state:
+    st.session_state.email_sent_flag = False
 
 # ---------- LOGIN PAGE ----------
 def login_page():
@@ -104,12 +106,10 @@ def login_page():
         else:
             st.error("Incorrect password.")
 
-# ---------- EMAIL SENDER (called from backend) ----------
+# ---------- EMAIL SENDER ----------
 def send_alert_email():
     if st.session_state.email_config is None:
-        st.warning("Please configure email settings first.")
-        return False
-
+        return False, "Email not configured"
     try:
         msg = MIMEMultipart()
         msg["From"] = st.session_state.email_config["sender"]
@@ -129,12 +129,11 @@ def send_alert_email():
         server.login(st.session_state.email_config["sender"], st.session_state.email_config["password"])
         server.send_message(msg)
         server.quit()
-        return True
+        return True, "Email sent"
     except Exception as e:
-        st.error(f"Email failed: {e}")
-        return False
+        return False, str(e)
 
-# ---------- MAIN APP (browser camera + JS detection) ----------
+# ---------- MAIN APP ----------
 def main_app():
     st.markdown('<div style="display: flex; align-items: center; justify-content: center;"><span class="logo-small">🚒</span><span class="logo-small">G‑Firefighter Alarm</span><span class="logo-small">🔥</span></div>', unsafe_allow_html=True)
     st.title("🔥 Live Fire Detection")
@@ -143,6 +142,7 @@ def main_app():
     # Logout button
     if st.button("Logout"):
         st.session_state.authenticated = False
+        st.session_state.email_sent_flag = False
         st.rerun()
 
     st.markdown("---")
@@ -163,21 +163,23 @@ def main_app():
             else:
                 st.error("All fields required.")
 
-    # The actual camera and detection UI is an HTML component
-    # because only JavaScript can access the camera.
-    # We will embed an HTML/JS page that:
-    # - Requests camera
-    # - Shows video
-    # - Periodically analyzes frames for fire colors
-    # - Plays alarm sound and calls a Streamlit endpoint to send email.
-    #
-    # To call Streamlit backend from JavaScript, we use a hidden form
-    # that sends a POST request to a Streamlit endpoint.
-    # We'll create a simple Streamlit endpoint via st.form and query parameters.
+    # Check for fire detection trigger from JavaScript (via query param)
+    # Using st.query_params (new API)
+    query_params = st.query_params
+    if query_params.get("fire_detected") == "1":
+        if not st.session_state.email_sent_flag:
+            success, msg = send_alert_email()
+            if success:
+                st.success("Alert email sent to house owner.")
+                st.session_state.email_sent_flag = True
+            else:
+                st.error(f"Failed to send email: {msg}")
+        # Clear the query param to prevent repeated sending
+        st.query_params.clear()
 
     st.markdown("### 🎥 Camera Detection")
 
-    # Build HTML/JS component
+    # Build HTML/JS component (same as before, but with improved fetch)
     camera_html = """
     <div id="camera-container" style="text-align: center;">
         <video id="video" width="100%" autoplay muted style="border-radius: 20px; border: 2px solid #ff6b6b;"></video>
@@ -233,13 +235,11 @@ def main_app():
 
             // Simple fire detection using HSV color range (same as Python version)
             function detectFire(frameData, width, height) {
-                // frameData is ImageData (RGBA)
                 let firePixels = 0;
                 for (let i = 0; i < frameData.data.length; i += 4) {
                     let r = frameData.data[i];
                     let g = frameData.data[i+1];
                     let b = frameData.data[i+2];
-                    // Convert RGB to HSV (approximate)
                     let rr = r/255, gg = g/255, bb = b/255;
                     let max = Math.max(rr, gg, bb);
                     let min = Math.min(rr, gg, bb);
@@ -255,7 +255,6 @@ def main_app():
                         else h = 60 * (((rr - gg)/delta) + 4);
                     }
                     if (h < 0) h += 360;
-                    // Fire colors: red/orange hues (0-25 and 335-360) with high saturation and value
                     if ((h <= 25 || h >= 335) && s > 0.4 && v > 0.5) {
                         firePixels++;
                     }
@@ -264,6 +263,7 @@ def main_app():
                 return { fire: ratio > 0.01, ratio: ratio };
             }
 
+            let lastEmailTriggerTime = 0;
             function captureAndAnalyze() {
                 if (!video.videoWidth || !video.videoHeight) return;
                 canvas.width = video.videoWidth;
@@ -274,19 +274,23 @@ def main_app():
                 if (result.fire) {
                     statusDiv.innerHTML = '<span style="color: #ff4b4b; font-weight: bold;">🔥 FIRE DETECTED! Alarm sounding. 🔥</span>';
                     playAlarm();
-                    // Send email via Streamlit endpoint (using a fetch to the same page with query param)
-                    fetch(window.location.href + '?fire_detected=1', { method: 'POST' })
-                        .catch(e => console.warn("Email trigger failed", e));
+                    // Send email only once every 30 seconds at most
+                    const now = Date.now();
+                    if (now - lastEmailTriggerTime > 30000) {
+                        lastEmailTriggerTime = now;
+                        // Use fetch to call the Streamlit backend with query param
+                        fetch(window.location.href + '?fire_detected=1', { method: 'POST' })
+                            .catch(e => console.warn("Email trigger failed", e));
+                    }
                 } else {
                     statusDiv.innerHTML = '<span style="color: #2e7d32;">✅ No fire detected. (Fire ratio: ' + (result.ratio*100).toFixed(2) + '%)</span>';
-                    // stop alarm if fire gone
                     if (alarmPlaying) stopAlarm();
                 }
             }
 
             function startDetection() {
                 if (detectionInterval) clearInterval(detectionInterval);
-                detectionInterval = setInterval(captureAndAnalyze, 500); // every 0.5 sec
+                detectionInterval = setInterval(captureAndAnalyze, 500);
                 statusDiv.innerHTML = "Detection active...";
             }
 
@@ -301,7 +305,6 @@ def main_app():
 
             document.getElementById('startBtn').onclick = () => {
                 if (!stream) {
-                    // request camera
                     navigator.mediaDevices.getUserMedia({ video: true })
                         .then(s => {
                             stream = s;
@@ -331,21 +334,7 @@ def main_app():
         })();
     </script>
     """
-    components.html(camera_html, height=500)
-
-    # Handle email sending when fire is detected (via POST)
-    # We'll use a hidden endpoint using st.experimental_get_query_params
-    query_params = st.experimental_get_query_params()
-    if query_params.get("fire_detected") == ["1"]:
-        if st.session_state.email_config:
-            if send_alert_email():
-                st.success("Alert email sent to house owner.")
-            else:
-                st.error("Failed to send email. Check your email settings.")
-        else:
-            st.warning("Email not configured. Please configure email alerts in the section above.")
-        # clear the query param to avoid infinite loop
-        st.experimental_set_query_params()
+    components.html(camera_html, height=550)
 
     st.markdown("---")
     st.caption("G‑Firefighter Alarm – Protecting your home 24/7")
